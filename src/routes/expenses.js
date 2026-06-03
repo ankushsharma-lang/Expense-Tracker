@@ -60,7 +60,11 @@ router.delete("/:id", authenticateToken, async (req, res) => {
     });
   }
 });
-router.post("/:id/submit", authenticateToken, async (req, res) => {
+router.post(
+  "/:id/submit",
+  authenticateToken,
+  requireRole("member"),
+  async (req, res) => {
   try {
     await pool.query(
       "UPDATE expenses SET status='submitted' WHERE id=?",
@@ -101,14 +105,40 @@ router.post(
   authenticateToken,
   requireRole("manager", "admin"),
   async (req, res) => {
+
+    const connection = await pool.getConnection();
+
     try {
 
-      await pool.query(
+      await connection.beginTransaction();
+
+      const [expense] = await connection.query(
+        "SELECT status FROM expenses WHERE id=?",
+        [req.params.id]
+      );
+
+      if (expense.length === 0) {
+        await connection.rollback();
+
+        return res.status(404).json({
+          message: "Expense not found"
+        });
+      }
+
+      if (expense[0].status !== "submitted") {
+        await connection.rollback();
+
+        return res.status(409).json({
+          message: "Invalid state transition"
+        });
+      }
+
+      await connection.query(
         "UPDATE expenses SET status='approved' WHERE id=?",
         [req.params.id]
       );
 
-      await pool.query(
+      await connection.query(
         `INSERT INTO expense_approvals
         (expense_id, reviewed_by, status)
         VALUES (?, ?, ?)`,
@@ -119,15 +149,26 @@ router.post(
         ]
       );
 
+      await connection.commit();
+
       res.json({
         message: "Expense approved"
       });
 
     } catch (error) {
+
+      await connection.rollback();
+
       console.log(error);
+
       res.status(500).json({
         message: "Server Error"
       });
+
+    } finally {
+
+      connection.release();
+
     }
   }
 );
@@ -136,16 +177,44 @@ router.post(
   authenticateToken,
   requireRole("manager", "admin"),
   async (req, res) => {
+
+    const connection = await pool.getConnection();
+
     try {
 
       const { comment } = req.body;
 
-      await pool.query(
+      await connection.beginTransaction();
+
+      const [expense] = await connection.query(
+        "SELECT status FROM expenses WHERE id=?",
+        [req.params.id]
+      );
+
+      if (expense.length === 0) {
+
+        await connection.rollback();
+
+        return res.status(404).json({
+          message: "Expense not found"
+        });
+      }
+
+      if (expense[0].status !== "submitted") {
+
+        await connection.rollback();
+
+        return res.status(409).json({
+          message: "Invalid state transition"
+        });
+      }
+
+      await connection.query(
         "UPDATE expenses SET status='rejected' WHERE id=?",
         [req.params.id]
       );
 
-      await pool.query(
+      await connection.query(
         `INSERT INTO expense_approvals
         (expense_id, reviewed_by, status, comment)
         VALUES (?, ?, ?, ?)`,
@@ -157,15 +226,26 @@ router.post(
         ]
       );
 
+      await connection.commit();
+
       res.json({
         message: "Expense rejected"
       });
 
     } catch (error) {
+
+      await connection.rollback();
+
       console.log(error);
+
       res.status(500).json({
         message: "Server Error"
       });
+
+    } finally {
+
+      connection.release();
+
     }
   }
 );
